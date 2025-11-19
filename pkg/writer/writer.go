@@ -9,4 +9,6 @@ type RemoteWriter interface {
 	io.Writer
 
 	Stop(ctx context.Context) error
+
+	Monitor() string
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/gogearbox/gearbox"
 	"github.com/rs/zerolog"
@@ -9,8 +10,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -23,11 +26,12 @@ func main() {
 	gb := gearbox.New()
 
 	remoteWriter := httpwriter.New(httpwriter.HttpRemoteConfig{
-		Url:                   "http://192.168.1.155:9088", // fluent-bit server
-		Workers:               16,
-		BatchQuantitativeSize: 50,
-		QueueSize:             500,
-		Debug:                 false,
+		Url:                       "http://192.168.1.155:9088", // my fluent-bit server
+		Workers:                   16,
+		BatchQuantitativeSize:     100,
+		QueueSize:                 500,
+		Debug:                     false,
+		DisplayMonitorIntervalSec: 15, // display monitor metrics
 	})
 
 	rootLogger := zerolog.New(zerolog.MultiLevelWriter(
@@ -99,10 +103,31 @@ func main() {
 	)
 
 	go func() {
+		// start web server
 		if e := gb.Start(":9191"); e != nil {
 			panic(e)
 		}
 	}()
 
-	select {}
+	var errChan = make(chan error, 1)
+
+	go func() {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
+		errChan <- fmt.Errorf("%s", <-sigChan)
+	}()
+
+	exitErr := <-errChan
+
+	log.Printf("receive signal:%v\n", exitErr)
+
+	// stop gracefully
+	err := remoteWriter.Stop(context.Background())
+	if err != nil {
+		log.Printf("stop remote writer failed:%v\n", err)
+	}
+
+	log.Println("exit now!")
+
+	time.Sleep(50 * time.Millisecond)
 }
