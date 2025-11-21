@@ -8,11 +8,11 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sweemingdow/log_remote_writer/pkg/utils"
 	"github.com/sweemingdow/log_remote_writer/pkg/writer"
+	"github.com/sweemingdow/log_remote_writer/pkg/writer/monitor"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -64,7 +64,7 @@ type httpWriter struct {
 	hCli          *http.Client
 	reqTimeoutDur time.Duration
 	receiverExit  chan struct{}
-	monitor       *httpWriterMonitor
+	monitor       *monitor.RemoteWriterMonitor
 }
 
 func New(cfg HttpRemoteConfig) writer.RemoteWriter {
@@ -80,10 +80,6 @@ func New(cfg HttpRemoteConfig) writer.RemoteWriter {
 
 	correctCfg(c)
 
-	hwm := new(httpWriterMonitor)
-	hwm.deliverMaxTookMills.Store(0)
-	hwm.deliverMinTookMills.Store(^uint32(0))
-
 	mu := &sync.Mutex{}
 	w := &httpWriter{
 		queue:         make(chan []byte, cfg.QueueSize),
@@ -94,7 +90,7 @@ func New(cfg HttpRemoteConfig) writer.RemoteWriter {
 		batchBuffer:   make([][]byte, 0, c.BatchQuantitativeSize),
 		timingDur:     time.Duration(c.BatchTimingMills) * time.Millisecond,
 		reqTimeoutDur: time.Duration(c.RequestTimeoutMills) * time.Millisecond,
-		monitor:       hwm,
+		monitor:       monitor.NewMonitor(),
 	}
 
 	w.timingTicker = time.NewTicker(w.timingDur)
@@ -175,7 +171,11 @@ func (hw *httpWriter) displayMonitor() {
 		for {
 			select {
 			case <-hw.monitorTicker.C:
-				log.Printf("[http writer]: display monitor metrics:%v\n", hw.Monitor())
+				mm := hw.Monitor()
+				infoBytes, err := utils.FmtJson(&mm)
+				if err == nil {
+					log.Printf("[http writer]: display monitor metrics:%s\n", string(infoBytes))
+				}
 			case <-hw.done:
 				return
 			}
@@ -246,16 +246,16 @@ func (hw *httpWriter) submit(entries [][]byte) {
 		deliverTook := time.Since(deliverStart).Milliseconds()
 
 		if resp.StatusCode >= 400 {
-			hw.monitor.deliverFailed(uint64(len(entries)))
-			hw.monitor.updateTook(uint64(deliverTook))
+			hw.monitor.DeliverFailed(uint64(len(entries)))
+			hw.monitor.UpdateTook(uint64(deliverTook))
 			body, _ := io.ReadAll(resp.Body)
 
 			hw.handleError(errors.New(fmt.Sprintf("[http writer]: push log events to remote failed, status:%d, respBody:%s", resp.StatusCode, string(body))))
 			return
 		}
 
-		hw.monitor.deliverSuccess(uint64(len(entries)))
-		hw.monitor.updateTook(uint64(deliverTook))
+		hw.monitor.DeliverSuccess(uint64(len(entries)))
+		hw.monitor.UpdateTook(uint64(deliverTook))
 	})
 }
 
@@ -269,7 +269,7 @@ func (hw *httpWriter) handleError(err error) {
 
 func (hw *httpWriter) Write(p []byte) (n int, err error) {
 	if hw.closed.Load() {
-		hw.monitor.rejected()
+		hw.monitor.Rejected()
 		return 0, HadBeStoppedErr
 	}
 
@@ -279,30 +279,30 @@ func (hw *httpWriter) Write(p []byte) (n int, err error) {
 
 	select {
 	case <-hw.done:
-		hw.monitor.rejected()
+		hw.monitor.Rejected()
 		return 0, HadBeStoppedErr
 	case hw.queue <- np:
-		hw.monitor.enqueued()
+		hw.monitor.Enqueued()
 		return len(p), nil
 	default:
 		// simple fallback
 		select {
 		case <-time.After(24 * time.Millisecond):
 			if hw.closed.Load() {
-				hw.monitor.rejected()
+				hw.monitor.Rejected()
 				return 0, HadBeStoppedErr
 			}
 
 			select {
 			case hw.queue <- np:
-				hw.monitor.enqueued()
+				hw.monitor.Enqueued()
 				return len(p), nil
 			default:
-				hw.monitor.discarded()
+				hw.monitor.Discarded()
 				return 0, errors.New(fmt.Sprintf("[http writer]: queue buffer fully, discard this event:%s", string(p)))
 			}
 		case <-hw.done:
-			hw.monitor.rejected()
+			hw.monitor.Rejected()
 			return 0, HadBeStoppedErr
 		}
 	}
@@ -376,34 +376,15 @@ func (hw *httpWriter) Stop(ctx context.Context) error {
 	case <-time.After(timeout):
 		return errors.New(fmt.Sprintf("http writer stopped timeout after:%v", timeout))
 	case <-flushed:
-		log.Printf("[http writer]: stopped gracefully, metrics:%s\n", hw.Monitor())
+		mm := hw.Monitor()
+		infoBytes, _ := utils.FmtJson(&mm)
+		log.Printf("[http writer]: stopped gracefully, metrics:%s\n", string(infoBytes))
 		return nil
 	}
 }
 
-func (hw *httpWriter) Monitor() string {
-	mm := make(map[string]any)
-
-	mm["enqueueCnt"] = strconv.FormatUint(hw.monitor.enqueueCounter.Load(), 10)
-	mm["rejectCnt"] = strconv.FormatUint(hw.monitor.stoppedRejectCounter.Load(), 10)
-	mm["deliverSuccessCnt"] = strconv.FormatUint(hw.monitor.deliverSuccessCounter.Load(), 10)
-	mm["deliverFailedCnt"] = strconv.FormatUint(hw.monitor.deliverFailedCounter.Load(), 10)
-	mm["discardCnt"] = strconv.FormatUint(hw.monitor.discardCounter.Load(), 10)
-	mm["maxTookMills"] = strconv.FormatUint(uint64(hw.monitor.deliverMaxTookMills.Load()), 10) + "ms"
-	mm["minTookMills"] = strconv.FormatUint(uint64(hw.monitor.deliverMinTookMills.Load()), 10) + "ms"
-
-	totalBatchCnt := hw.monitor.deliverTotalBatchCounter.Load()
-	totalBatchTook := hw.monitor.deliverTotalTookCounter.Load()
-
-	if totalBatchCnt > 0 {
-		avg := float64(totalBatchTook) / float64(totalBatchCnt)
-		mm["avgTookMills"] = fmt.Sprintf("%.2fms", avg)
-	} else {
-		mm["avgTookMills"] = "0.00ms"
-	}
-
-	infoBytes, _ := utils.FmtJson(&mm)
-	return string(infoBytes)
+func (hw *httpWriter) Monitor() map[string]any {
+	return hw.monitor.CollectMetrics()
 }
 
 func mustInitTaskPool(c *HttpRemoteConfig) *ants.Pool {
@@ -473,45 +454,4 @@ func correctCfg(c *HttpRemoteConfig) {
 	if c.StopTimeoutMills == 0 {
 		c.StopTimeoutMills = defaultStopTimeoutMills
 	}
-}
-
-type httpWriterMonitor struct {
-	enqueueCounter           atomic.Uint64
-	stoppedRejectCounter     atomic.Uint64
-	deliverSuccessCounter    atomic.Uint64
-	deliverFailedCounter     atomic.Uint64
-	deliverTotalTookCounter  atomic.Uint64
-	discardCounter           atomic.Uint64
-	deliverTotalBatchCounter atomic.Uint64
-	deliverMaxTookMills      atomic.Uint32 // every batch
-	deliverMinTookMills      atomic.Uint32 // every batch
-}
-
-func (hwm *httpWriterMonitor) enqueued() {
-	hwm.enqueueCounter.Add(1)
-}
-
-func (hwm *httpWriterMonitor) rejected() {
-	hwm.stoppedRejectCounter.Add(1)
-}
-
-func (hwm *httpWriterMonitor) deliverSuccess(cnt uint64) {
-	hwm.deliverSuccessCounter.Add(cnt)
-	hwm.deliverTotalBatchCounter.Add(1)
-}
-
-func (hwm *httpWriterMonitor) deliverFailed(cnt uint64) {
-	hwm.deliverFailedCounter.Add(cnt)
-	hwm.deliverTotalBatchCounter.Add(1)
-}
-
-func (hwm *httpWriterMonitor) discarded() {
-	hwm.discardCounter.Add(1)
-}
-
-func (hwm *httpWriterMonitor) updateTook(took uint64) {
-	hwm.deliverTotalTookCounter.Add(took)
-
-	utils.CASUpdateU32Max(&hwm.deliverMaxTookMills, uint32(took))
-	utils.CASUpdateU32Min(&hwm.deliverMinTookMills, uint32(took))
 }

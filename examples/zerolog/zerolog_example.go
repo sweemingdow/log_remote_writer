@@ -6,7 +6,7 @@ import (
 	"github.com/gogearbox/gearbox"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/pkgerrors"
-	"github.com/sweemingdow/log_remote_writer/pkg/writer/httpwriter"
+	"github.com/sweemingdow/log_remote_writer/pkg/writer/tcpwriter"
 	"log"
 	"net/http"
 	"os"
@@ -25,11 +25,22 @@ func init() {
 func main() {
 	gb := gearbox.New()
 
-	remoteWriter := httpwriter.New(httpwriter.HttpRemoteConfig{
-		Url:                       "http://192.168.1.155:9088", // my fluent-bit server
-		Workers:                   16,
-		BatchQuantitativeSize:     100,
-		QueueSize:                 500,
+	// http writer test
+	//remoteWriter := httpwriter.New(httpwriter.HttpRemoteConfig{
+	//	Url:                       "http://192.168.1.155:9088", // my fluent-bit server
+	//	Workers:                   16,
+	//	BatchQuantitativeSize:     100,
+	//	QueueSize:                 500,
+	//	Debug:                     false,
+	//	DisplayMonitorIntervalSec: 15, // display monitor metrics
+	//})
+
+	// tcp writer test
+	// To switch from http to tcp implementation, the only thing to do is to change the configuration
+	remoteWriter := tcpwriter.New(tcpwriter.TcpRemoteConfig{
+		Host:                      "192.168.1.155", // my fluent-bit server
+		Port:                      5170,
+		QueueSize:                 2000,
 		Debug:                     false,
 		DisplayMonitorIntervalSec: 15, // display monitor metrics
 	})
@@ -83,6 +94,7 @@ func main() {
 
 						{
 							lg := logger.With().Str("org", "im_sys").Str("seq", seq).Int("uid", j).Logger()
+
 							lg.Trace().Msg("this is a trace msg")
 							lg.Debug().Msg("this is a debug msg")
 							lg.Info().Msg("this is a info msg")
@@ -118,7 +130,6 @@ func main() {
 	}()
 
 	exitErr := <-errChan
-
 	log.Printf("receive signal:%v\n", exitErr)
 
 	// stop gracefully

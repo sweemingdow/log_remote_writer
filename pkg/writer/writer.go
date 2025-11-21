@@ -8,7 +8,9 @@ import (
 type RemoteWriter interface {
 	io.Writer
 
+	// stop gracefully
 	Stop(ctx context.Context) error
 
-	Monitor() string
+	// return monitor info
+	Monitor() map[string]any
 }
