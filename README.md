@@ -38,6 +38,17 @@ run main and access it with the following address:
 
 http://localhost:9191/test/display?level=warn&count=100&guc=10
 
+#### Key Features
+
+- **Universal Compatibility:** Uses io.Writer for broad support.
+
+- **Remote Forwarding:** Efficiently forwards structured logs to a remote collector.
+
+- **Protocol Support:** Connects to remote services via both TCP and HTTP.
+
+- **Ideal for Collectors:** Perfectly suited for integrating with log aggregation systems like Fluent Bit and Fluentd.
+
+It serves as a reliable middle layer to ensure your application logs are delivered asynchronously and reliably to your centralized log management system.
 
 - how to choice
   - httpWriter
