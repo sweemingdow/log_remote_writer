@@ -33,6 +33,11 @@ remoteWriter := tcpwriter.New(tcpwriter.TcpRemoteConfig{
 		Debug:                     false,
 		DisplayMonitorIntervalSec: 15, // display monitor metrics
 	})
+
+rootLogger := zerolog.New(zerolog.MultiLevelWriter(
+    os.Stdout,
+    remoteWriter, // add remoteWriter
+)).With().Timestamp().Int("pid", os.Getpid()).Logger()
 ```
 run main and access it with the following address:
 

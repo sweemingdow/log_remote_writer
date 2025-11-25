@@ -166,6 +166,13 @@ func (tw *tcpWriter) Stop(ctx context.Context) error {
 		defer close(flushed)
 
 		tw.cleanWhenStop(ctx)
+
+		// close the floor connection
+		if tw.conn != nil {
+			if err := tw.conn.close(); err != nil {
+				log.Printf("[tcp writer]: failed to close connection: %v\n", err)
+			}
+		}
 	}()
 
 	timeout := time.Duration(tw.cfg.StopTimeoutMills) * time.Millisecond
