@@ -592,7 +592,10 @@ func (tw *tcpWriter) cleanWhenStop(ctx context.Context) {
 			remainCnt += entry.taskCnt
 
 			if err := tw.doWrite(entry, false); err != nil {
+				tw.monitor.DeliverFailed(uint64(entry.taskCnt))
 				tw.handleError(err)
+			} else {
+				tw.monitor.DeliverSuccess(uint64(entry.taskCnt))
 			}
 		}
 
